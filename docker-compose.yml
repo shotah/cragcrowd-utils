@@ -1,0 +1,76 @@
+version: '3.8'
+
+services:
+  # MongoDB Database
+  mongodb:
+    image: mongo:7
+    container_name: cragcrowd-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: cragcrowd123
+      MONGO_INITDB_DATABASE: cragcrowd
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_data:/data/db
+      - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    networks:
+      - cragcrowd-network
+
+  # CragCrowd API
+  cragcrowd-api:
+    build:
+      context: ../cragcrowd-api
+      dockerfile: Dockerfile
+    container_name: cragcrowd-api
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - MONGODB_URI=mongodb://admin:cragcrowd123@mongodb:27017/cragcrowd?authSource=admin
+      - DB_NAME=cragcrowd
+    ports:
+      - "3000:3000"
+    depends_on:
+      - mongodb
+    volumes:
+      - api_logs:/app/logs
+    networks:
+      - cragcrowd-network
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://localhost:3000/api/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) })"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # CragCrowd Web UI
+  cragcrowd-web-ui:
+    build:
+      context: ../cragcrowd-web-ui
+      dockerfile: Dockerfile
+    container_name: cragcrowd-web-ui
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    depends_on:
+      - cragcrowd-api
+    networks:
+      - cragcrowd-network
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:3001/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  mongodb_data:
+    driver: local
+  api_logs:
+    driver: local
+
+networks:
+  cragcrowd-network:
+    driver: bridge

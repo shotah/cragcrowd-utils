@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  # MongoDB Database (same as production)
+  mongodb:
+    image: mongo:7
+    container_name: cragcrowd-mongodb-dev
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: cragcrowd123
+      MONGO_INITDB_DATABASE: cragcrowd
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongodb_dev_data:/data/db
+      - ./scripts/mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    networks:
+      - cragcrowd-dev-network
+
+  # CragCrowd API (Development mode with hot reload)
+  cragcrowd-api-dev:
+    build:
+      context: ../cragcrowd-api
+      dockerfile: Dockerfile.dev
+    container_name: cragcrowd-api-dev
+    restart: unless-stopped
+    environment:
+      - NODE_ENV=development
+      - PORT=3000
+      - MONGODB_URI=mongodb://admin:cragcrowd123@mongodb:27017/cragcrowd?authSource=admin
+      - DB_NAME=cragcrowd
+      - LOG_LEVEL=debug
+    ports:
+      - "3000:3000"
+    depends_on:
+      - mongodb
+    volumes:
+      - ../cragcrowd-api/src:/app/src:ro
+      - ../cragcrowd-api/package*.json:/app/
+      - api_dev_logs:/app/logs
+      - /app/node_modules
+    networks:
+      - cragcrowd-dev-network
+
+  # CragCrowd Web UI (Development mode with hot reload)
+  cragcrowd-web-ui-dev:
+    build:
+      context: ../cragcrowd-web-ui
+      dockerfile: Dockerfile.dev
+    container_name: cragcrowd-web-ui-dev
+    restart: unless-stopped
+    environment:
+      - VITE_API_URL=http://localhost:3000/api
+    ports:
+      - "3001:3001"
+    depends_on:
+      - cragcrowd-api-dev
+    volumes:
+      - ../cragcrowd-web-ui/src:/app/src:ro
+      - ../cragcrowd-web-ui/public:/app/public:ro
+      - ../cragcrowd-web-ui/package*.json:/app/
+      - /app/node_modules
+    networks:
+      - cragcrowd-dev-network
+
+volumes:
+  mongodb_dev_data:
+    driver: local
+  api_dev_logs:
+    driver: local
+
+networks:
+  cragcrowd-dev-network:
+    driver: bridge

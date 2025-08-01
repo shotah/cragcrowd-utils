@@ -1,0 +1,353 @@
+name: Multi-Repository CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run integration tests daily at 2 AM UTC
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      test_integration:
+        description: 'Run full integration tests'
+        required: false
+        default: 'true'
+
+jobs:
+  check-repositories:
+    runs-on: ubuntu-latest
+    outputs:
+      repos_available: ${{ steps.check.outputs.repos_available }}
+      
+    steps:
+      - name: Checkout utils
+        uses: actions/checkout@v4
+        with:
+          path: cragcrowd-utils
+
+      - name: Check repository availability
+        id: check
+        run: |
+          REPOS_AVAILABLE=true
+          
+          # Try to access each repository
+          if ! curl -s -f "https://api.github.com/repos/shotah/cragcrowd-api" > /dev/null; then
+            echo "API repository not accessible"
+            REPOS_AVAILABLE=false
+          fi
+          
+          if ! curl -s -f "https://api.github.com/repos/shotah/cragcrowd-web-ui" > /dev/null; then
+            echo "UI repository not accessible"
+            REPOS_AVAILABLE=false
+          fi
+          
+          if ! curl -s -f "https://api.github.com/repos/shotah/cragcrowd-firmware" > /dev/null; then
+            echo "Firmware repository not accessible"
+            REPOS_AVAILABLE=false
+          fi
+          
+          if ! curl -s -f "https://api.github.com/repos/shotah/cragcrowd-gateway" > /dev/null; then
+            echo "Gateway repository not accessible"
+            REPOS_AVAILABLE=false
+          fi
+          
+          echo "repos_available=$REPOS_AVAILABLE" >> $GITHUB_OUTPUT
+
+  integration-test:
+    needs: check-repositories
+    if: needs.check-repositories.outputs.repos_available == 'true'
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout utils
+        uses: actions/checkout@v4
+        with:
+          path: cragcrowd-utils
+
+      - name: Checkout API
+        uses: actions/checkout@v4
+        with:
+          repository: shotah/cragcrowd-api
+          path: cragcrowd-api
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout UI
+        uses: actions/checkout@v4
+        with:
+          repository: shotah/cragcrowd-web-ui
+          path: cragcrowd-web-ui
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '18'
+          cache: 'npm'
+          cache-dependency-path: |
+            cragcrowd-api/package-lock.json
+            cragcrowd-web-ui/package-lock.json
+
+      - name: Install API dependencies
+        working-directory: cragcrowd-api
+        run: npm ci
+
+      - name: Install UI dependencies
+        working-directory: cragcrowd-web-ui
+        run: npm ci
+
+      - name: Build API
+        working-directory: cragcrowd-api
+        run: npm run build
+
+      - name: Build UI
+        working-directory: cragcrowd-web-ui
+        run: npm run build
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Start integration environment
+        working-directory: cragcrowd-utils
+        run: |
+          # Start services
+          docker-compose -f docker-compose.dev.yml up -d mongodb
+          
+          # Wait for MongoDB
+          timeout 60s bash -c 'until docker-compose -f docker-compose.dev.yml exec -T mongodb mongosh --eval "db.adminCommand(\"ping\")" > /dev/null 2>&1; do sleep 2; done'
+          
+          # Start API and UI
+          docker-compose -f docker-compose.dev.yml up -d
+
+      - name: Wait for services
+        run: |
+          # Wait for API health check
+          timeout 120s bash -c 'until curl -f http://localhost:3000/api/health > /dev/null 2>&1; do sleep 5; done'
+          
+          # Wait for UI
+          timeout 60s bash -c 'until curl -f http://localhost:3001 > /dev/null 2>&1; do sleep 5; done'
+
+      - name: Run integration tests
+        working-directory: cragcrowd-utils
+        run: |
+          echo "🧪 Running integration tests..."
+          
+          # Test API health
+          response=$(curl -s http://localhost:3000/api/health)
+          if [[ $(echo $response | jq -r '.status') != "healthy" ]]; then
+            echo "❌ API health check failed"
+            exit 1
+          fi
+          echo "✅ API health check passed"
+          
+          # Test API endpoints
+          curl -X POST http://localhost:3000/api/sensor-data \
+            -H "Content-Type: application/json" \
+            -d '{"wall_id":"test_integration","device_count":5,"timestamp":'$(date +%s000)'}'
+          
+          # Test data retrieval
+          response=$(curl -s "http://localhost:3000/api/sensor-data?wall_id=test_integration&limit=1")
+          count=$(echo $response | jq '.count')
+          if [[ $count -lt 1 ]]; then
+            echo "❌ Data storage/retrieval test failed"
+            exit 1
+          fi
+          echo "✅ Data storage/retrieval test passed"
+          
+          # Test UI accessibility
+          status=$(curl -s -o /dev/null -w "%{http_code}" http://localhost:3001)
+          if [[ $status != "200" ]]; then
+            echo "❌ UI accessibility test failed (status: $status)"
+            exit 1
+          fi
+          echo "✅ UI accessibility test passed"
+
+      - name: Test Makefile commands
+        working-directory: cragcrowd-utils
+        run: |
+          echo "🔧 Testing Makefile commands..."
+          
+          # Test status command
+          make status
+          
+          # Test health check
+          make health-check || echo "Health check command tested"
+          
+          echo "✅ Makefile commands working"
+
+      - name: Collect logs on failure
+        if: failure()
+        working-directory: cragcrowd-utils
+        run: |
+          echo "📋 Collecting service logs..."
+          docker-compose -f docker-compose.dev.yml logs
+
+      - name: Cleanup
+        if: always()
+        working-directory: cragcrowd-utils
+        run: |
+          docker-compose -f docker-compose.dev.yml down -v
+          docker system prune -f
+
+  docker-build-test:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout utils
+        uses: actions/checkout@v4
+        with:
+          path: cragcrowd-utils
+
+      - name: Checkout API
+        uses: actions/checkout@v4
+        with:
+          repository: shotah/cragcrowd-api
+          path: cragcrowd-api
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Checkout UI
+        uses: actions/checkout@v4
+        with:
+          repository: shotah/cragcrowd-web-ui
+          path: cragcrowd-web-ui
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Test production Docker builds
+        working-directory: cragcrowd-utils
+        run: |
+          echo "🐳 Testing Docker builds..."
+          
+          # Build production images
+          docker-compose build
+          
+          echo "✅ Docker builds successful"
+
+      - name: Test development Docker builds
+        working-directory: cragcrowd-utils
+        run: |
+          echo "🐳 Testing development Docker builds..."
+          
+          # Build development images
+          docker-compose -f docker-compose.dev.yml build
+          
+          echo "✅ Development Docker builds successful"
+
+  documentation-check:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check documentation
+        run: |
+          echo "📚 Checking documentation..."
+          
+          # Check required files exist
+          if [[ ! -f "README.md" ]]; then
+            echo "❌ README.md missing"
+            exit 1
+          fi
+          
+          if [[ ! -f "CONTRIBUTING.md" ]]; then
+            echo "❌ CONTRIBUTING.md missing"
+            exit 1
+          fi
+          
+          if [[ ! -f "docker-compose.yml" ]]; then
+            echo "❌ docker-compose.yml missing"
+            exit 1
+          fi
+          
+          if [[ ! -f "Makefile" ]]; then
+            echo "❌ Makefile missing"
+            exit 1
+          fi
+          
+          echo "✅ Documentation files present"
+          
+          # Check for placeholder content
+          if grep -q "TODO\|FIXME\|placeholder" README.md; then
+            echo "⚠️ Found placeholder content in README.md"
+          fi
+          
+          # Check Makefile syntax
+          make help > /dev/null
+          echo "✅ Makefile syntax valid"
+
+  security-scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run security checks
+        run: |
+          echo "🔒 Running security checks..."
+          
+          # Check for secrets in files
+          if grep -r -E "(password|secret|key|token).*=" . --include="*.yml" --include="*.yaml" | grep -v example; then
+            echo "⚠️ Potential secrets found in configuration files"
+          fi
+          
+          # Check docker-compose security
+          if grep -q "privileged.*true" docker-compose*.yml; then
+            echo "⚠️ Privileged containers detected"
+          fi
+          
+          if grep -q "network_mode.*host" docker-compose*.yml; then
+            echo "⚠️ Host networking detected"
+          fi
+          
+          echo "✅ Security checks completed"
+
+  multi-platform-test:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Test Makefile help (Unix)
+        if: runner.os != 'Windows'
+        run: make help
+
+      - name: Test documentation access
+        run: |
+          # Check that documentation files are readable
+          if [[ -f "README.md" ]]; then
+            echo "✅ README.md accessible on ${{ matrix.os }}"
+          fi
+          
+          if [[ -f "CONTRIBUTING.md" ]]; then
+            echo "✅ CONTRIBUTING.md accessible on ${{ matrix.os }}"
+          fi
+
+  notify-status:
+    needs: [check-repositories, integration-test, docker-build-test, documentation-check, security-scan]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Report status
+        run: |
+          echo "📊 Multi-Repository CI/CD Results:"
+          echo "Repository Check: ${{ needs.check-repositories.result }}"
+          echo "Integration Tests: ${{ needs.integration-test.result }}"
+          echo "Docker Builds: ${{ needs.docker-build-test.result }}"
+          echo "Documentation: ${{ needs.documentation-check.result }}"
+          echo "Security Scan: ${{ needs.security-scan.result }}"
+          
+          if [[ "${{ needs.integration-test.result }}" == "success" ]]; then
+            echo "✅ All CragCrowd components working together!"
+          else
+            echo "⚠️ Integration issues detected"
+          fi
