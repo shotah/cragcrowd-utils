@@ -23,7 +23,7 @@ jobs:
       
     steps:
       - name: Checkout utils
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: cragcrowd-utils
 
@@ -62,19 +62,19 @@ jobs:
     
     steps:
       - name: Checkout utils
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: cragcrowd-utils
 
       - name: Checkout API
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: shotah/cragcrowd-api
           path: cragcrowd-api
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Checkout UI
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: shotah/cragcrowd-web-ui
           path: cragcrowd-web-ui
@@ -195,19 +195,19 @@ jobs:
     
     steps:
       - name: Checkout utils
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           path: cragcrowd-utils
 
       - name: Checkout API
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: shotah/cragcrowd-api
           path: cragcrowd-api
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Checkout UI
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: shotah/cragcrowd-web-ui
           path: cragcrowd-web-ui
@@ -241,7 +241,7 @@ jobs:
     
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Check documentation
         run: |
@@ -284,7 +284,7 @@ jobs:
     
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Run security checks
         run: |
@@ -314,7 +314,7 @@ jobs:
     
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Test Makefile help (Unix)
         if: runner.os != 'Windows'
